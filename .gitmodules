@@ -1,0 +1,3 @@
+[submodule "odoo_module"]
+	path = odoo_module
+	url = https://bitbucket.org/madkting/odoo_module.git
