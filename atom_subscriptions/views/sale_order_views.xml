@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_order_form_atom_subscriptions" model="ir.ui.view">
+        <field name="name">sale.order.form.atom.subscriptions</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+
+            <!-- Insertar campos de renta después del campo de plan -->
+            <xpath expr="//field[@name='plan_id']" position="after">
+
+                <!-- Plazo en meses (libre, el usuario escribe el número) -->
+                <field
+                    name="meses_renta"
+                    attrs="{'invisible': [('is_subscription', '=', False)]}"
+                    placeholder="Ej: 48"
+                />
+
+                <!-- TC Pactado: visible solo cuando hay meses y moneda USD -->
+                <field
+                    name="tc_pactado"
+                    attrs="{
+                        'invisible': ['|',
+                            ('meses_renta', '=', 0),
+                            ('currency_id.name', '!=', 'USD')
+                        ],
+                        'required': [
+                            ('meses_renta', '>', 0),
+                            ('currency_id.name', '=', 'USD')
+                        ]
+                    }"
+                    widget="float"
+                    options="{'digits': [16, 4]}"
+                    placeholder="Ej: 17.50"
+                />
+
+                <!-- Cuota mensual calculada en tiempo real -->
+                <field
+                    name="cuota_mensual_mxn"
+                    attrs="{'invisible': [('meses_renta', '=', 0)]}"
+                    readonly="1"
+                    widget="monetary"
+                />
+
+            </xpath>
+
+        </field>
+    </record>
+</odoo>
