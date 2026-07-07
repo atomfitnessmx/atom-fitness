@@ -30,7 +30,7 @@
                 <field name="cuota_mensual_mxn"
                     invisible="meses_renta == 0"
                     readonly="1"
-                    string="Cuota Mensual MXN"/>
+                    string="Cuota Mensual MXN $"/>
             </xpath>
 
             <!-- Pestaña Activos Fijos -->

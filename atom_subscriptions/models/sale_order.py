@@ -17,11 +17,12 @@ class SaleOrder(models.Model):
         help='Número de meses del contrato de renta.',
     )
 
-    cuota_mensual_mxn = fields.Monetary(
+    cuota_mensual_mxn = fields.Float(
         string='Cuota Mensual MXN',
-        currency_field='currency_id',
+        digits=(16, 2),
         compute='_compute_cuota_mensual',
         store=True,
+        help='Cuota mensual en MXN = Total USD × TC Pactado ÷ Meses.',
     )
 
     asset_ids = fields.Many2many(
@@ -56,6 +57,7 @@ class SaleOrder(models.Model):
                 )
                 if total_recurrente > 0:
                     if order.currency_id.name == 'USD' and order.tc_pactado > 0:
+                        # USD × TC ÷ meses = MXN por mes
                         cuota = (total_recurrente * order.tc_pactado) / meses
                     elif order.currency_id.name == 'MXN':
                         cuota = total_recurrente / meses
@@ -111,12 +113,17 @@ class SaleOrder(models.Model):
                 )
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
+
+                # Crear orden de entrega vinculada a la OV
+                self._crear_entrega_renta(order, lineas_recurrentes)
+
             else:
                 lineas_recurrentes = order.order_line.filtered(
                     lambda l: l.product_id.recurring_invoice
                 )
                 for line in lineas_recurrentes:
                     line.write({'price_unit': line.price_unit / meses})
+                self._crear_entrega_renta(order, lineas_recurrentes)
 
             if not order.plan_id:
                 plan_renta = self.env['sale.subscription.plan'].search(
@@ -126,6 +133,52 @@ class SaleOrder(models.Model):
                     order.write({'plan_id': plan_renta.id})
 
         return super().action_confirm()
+
+    def _crear_entrega_renta(self, order, lineas_recurrentes):
+        """Crea una orden de entrega vinculada a la OV para los productos recurrentes."""
+        # Buscar tipo de operación de entrega del almacén principal
+        picking_type = self.env['stock.picking.type'].search([
+            ('code', '=', 'outgoing'),
+            ('warehouse_id.lot_stock_id.complete_name', 'ilike', 'WH-NA'),
+        ], limit=1)
+
+        if not picking_type:
+            return
+
+        ubicacion_destino = self.env['stock.location'].search([
+            ('usage', '=', 'customer'),
+        ], limit=1)
+
+        moves = []
+        for line in lineas_recurrentes:
+            if line.product_id.type == 'product':
+                moves.append((0, 0, {
+                    'name': line.product_id.name,
+                    'product_id': line.product_id.id,
+                    'product_uom_qty': line.product_uom_qty,
+                    'product_uom': line.product_uom.id,
+                    'location_id': picking_type.default_location_src_id.id,
+                    'location_dest_id': ubicacion_destino.id,
+                    'sale_line_id': line.id,
+                }))
+
+        if not moves:
+            return
+
+        picking = self.env['stock.picking'].create({
+            'partner_id': order.partner_id.id,
+            'picking_type_id': picking_type.id,
+            'location_id': picking_type.default_location_src_id.id,
+            'location_dest_id': ubicacion_destino.id,
+            'origin': order.name,
+            'move_ids': moves,
+        })
+
+        # Vincular a la OV via procurement_group
+        if order.procurement_group_id:
+            picking.write({'group_id': order.procurement_group_id.id})
+
+        return picking
 
     def action_view_assets(self):
         self.ensure_one()
