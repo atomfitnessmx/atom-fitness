@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_order_form_atom_subscriptions" model="ir.ui.view">
+        <field name="name">sale.order.form.atom.subscriptions</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+
+            <xpath expr="//field[@name='plan_id']" position="after">
+
+                <!-- Plazo en meses -->
+                <field
+                    name="meses_renta"
+                    invisible="not is_subscription"
+                    placeholder="Ej: 48"
+                />
+
+                <!-- TC Pactado: solo cuando hay meses y moneda es USD -->
+                <field
+                    name="tc_pactado"
+                    invisible="meses_renta == 0 or currency_id != %(base.USD)d"
+                    required="meses_renta > 0 and currency_id == %(base.USD)d"
+                    widget="float"
+                    options="{'digits': [16, 4]}"
+                    placeholder="Ej: 17.50"
+                />
+
+                <!-- Cuota mensual calculada -->
+                <field
+                    name="cuota_mensual_mxn"
+                    invisible="meses_renta == 0"
+                    readonly="1"
+                    widget="monetary"
+                />
+
+            </xpath>
+
+        </field>
+    </record>
+</odoo>
