@@ -6,17 +6,6 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
 
-            <!-- Smartbutton Activos Fijos -->
-            <xpath expr="//div[@name='button_box']" position="inside">
-                <button name="action_view_assets"
-                    type="object"
-                    class="oe_stat_button"
-                    icon="fa-cogs"
-                    invisible="not is_subscription or asset_count == 0">
-                    <field name="asset_count" widget="statinfo" string="Activos Fijos"/>
-                </button>
-            </xpath>
-
             <!-- Campos de renta después del plan_block -->
             <xpath expr="//div[@name='plan_block']" position="after">
                 <field name="meses_renta"
@@ -31,18 +20,6 @@
                     invisible="meses_renta == 0"
                     readonly="1"
                     string="Cuota Mensual MXN $"/>
-            </xpath>
-
-            <!-- Pestaña Activos Fijos -->
-            <xpath expr="//page[@name='order_lines']" position="after">
-                <page string="Activos Fijos" invisible="not is_subscription">
-                    <field name="asset_ids" widget="many2many_tags"/>
-                    <p class="text-muted" invisible="asset_count != 0">
-                        Una vez creado el Activo Fijo en Contabilidad,
-                        vincúlalo aquí para monitorear su depreciación
-                        desde este contrato de renta.
-                    </p>
-                </page>
             </xpath>
 
         </field>
