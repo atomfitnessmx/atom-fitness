@@ -36,17 +36,7 @@
             <!-- Pestaña Activos Fijos -->
             <xpath expr="//page[@name='order_lines']" position="after">
                 <page string="Activos Fijos" invisible="not is_subscription">
-                    <field name="asset_ids"
-                        widget="many2many"
-                        string="Activos Fijos vinculados a este contrato">
-                        <list>
-                            <field name="name"/>
-                            <field name="original_value"/>
-                            <field name="book_value"/>
-                            <field name="acquisition_date"/>
-                            <field name="state"/>
-                        </list>
-                    </field>
+                    <field name="asset_ids" widget="many2many_tags"/>
                     <p class="text-muted" invisible="asset_count != 0">
                         Una vez creado el Activo Fijo en Contabilidad,
                         vincúlalo aquí para monitorear su depreciación
