@@ -3,11 +3,11 @@
     <record id="view_order_form_atom_subscriptions" model="ir.ui.view">
         <field name="name">sale.order.form.atom.subscriptions</field>
         <field name="model">sale.order</field>
-        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="inherit_id" ref="sale_subscription.sale_subscription_order_form"/>
         <field name="arch" type="xml">
 
-            <!-- Insertar ANTES de lista de precios para quedar en grupo separado -->
-            <xpath expr="//field[@name='pricelist_id']" position="before">
+            <!-- Insertar después del div plan_block completo -->
+            <xpath expr="//div[@name='plan_block']" position="after">
                 <field name="meses_renta"
                     invisible="not is_subscription"
                     placeholder="Ej: 48"
