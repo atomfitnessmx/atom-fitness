@@ -17,13 +17,20 @@ class SaleOrder(models.Model):
         help='Número de meses del contrato de renta.',
     )
 
-    # Campo no computado — se calcula on-the-fly en onchange y se fija al confirmar
     cuota_mensual_mxn = fields.Float(
         string='Cuota Mensual MXN $',
         digits=(16, 2),
         readonly=True,
         store=True,
+        compute='_compute_cuota_mensual',
         help='Cuota mensual en MXN = Total USD × TC Pactado ÷ Meses.',
+    )
+
+    # Flag para saber si la cuota ya fue fijada al confirmar
+    cuota_fijada = fields.Boolean(
+        string='Cuota Fijada',
+        default=False,
+        copy=False,
     )
 
     asset_ids = fields.Many2many(
@@ -44,38 +51,46 @@ class SaleOrder(models.Model):
         for order in self:
             order.asset_count = len(order.asset_ids)
 
-    def _calcular_cuota_mxn(self):
-        """Calcula la cuota mensual en MXN según moneda, TC y meses."""
-        self.ensure_one()
-        meses = self.meses_renta
-        if meses <= 0:
-            return 0.0
-        total_recurrente = sum(
-            line.price_subtotal
-            for line in self.order_line
-            if line.product_id.recurring_invoice
-        )
-        if total_recurrente <= 0:
-            return 0.0
-        if self.currency_id.name == 'USD' and self.tc_pactado > 0:
-            return (total_recurrente * self.tc_pactado) / meses
-        elif self.currency_id.name == 'MXN':
-            return total_recurrente / meses
-        return 0.0
-
-    @api.onchange('tc_pactado', 'meses_renta', 'currency_id', 'order_line')
-    def _onchange_renta_fields(self):
-        """Actualiza la cuota en tiempo real mientras edita la cotización."""
+    @api.depends('order_line.price_subtotal', 'order_line.product_id.recurring_invoice',
+                 'tc_pactado', 'currency_id', 'meses_renta', 'cuota_fijada')
+    def _compute_cuota_mensual(self):
         for order in self:
-            order.cuota_mensual_mxn = order._calcular_cuota_mxn()
-            if order.meses_renta > 0 and order.currency_id.name == 'USD' and not order.tc_pactado:
-                return {
-                    'warning': {
-                        'title': 'TC Pactado requerido',
-                        'message': 'La cotización está en USD. '
-                                   'Ingresa el TC pactado para calcular la cuota mensual en MXN.',
-                    }
+            # Si ya fue fijada al confirmar, no recalcular
+            if order.cuota_fijada:
+                continue
+
+            meses = order.meses_renta
+            if meses <= 0:
+                order.cuota_mensual_mxn = 0.0
+                continue
+
+            total_recurrente = sum(
+                line.price_subtotal
+                for line in order.order_line
+                if line.product_id.recurring_invoice
+            )
+
+            if total_recurrente <= 0:
+                order.cuota_mensual_mxn = 0.0
+                continue
+
+            if order.currency_id.name == 'USD' and order.tc_pactado > 0:
+                order.cuota_mensual_mxn = (total_recurrente * order.tc_pactado) / meses
+            elif order.currency_id.name == 'MXN':
+                order.cuota_mensual_mxn = total_recurrente / meses
+            else:
+                order.cuota_mensual_mxn = 0.0
+
+    @api.onchange('tc_pactado', 'meses_renta', 'currency_id')
+    def _onchange_renta_fields(self):
+        if self.meses_renta > 0 and self.currency_id.name == 'USD' and not self.tc_pactado:
+            return {
+                'warning': {
+                    'title': 'TC Pactado requerido',
+                    'message': 'La cotización está en USD. '
+                               'Ingresa el TC pactado para calcular la cuota mensual en MXN.',
                 }
+            }
 
     def action_confirm(self):
         for order in self:
@@ -84,8 +99,18 @@ class SaleOrder(models.Model):
 
             meses = order.meses_renta
 
-            # Calcular y fijar cuota ANTES de modificar precios
-            cuota_fija = order._calcular_cuota_mxn()
+            # Calcular cuota ANTES de modificar precios (moneda aún es USD)
+            total_recurrente = sum(
+                line.price_subtotal
+                for line in order.order_line
+                if line.product_id.recurring_invoice
+            )
+            if order.currency_id.name == 'USD' and order.tc_pactado > 0:
+                cuota_fija = (total_recurrente * order.tc_pactado) / meses
+            elif order.currency_id.name == 'MXN':
+                cuota_fija = total_recurrente / meses
+            else:
+                cuota_fija = 0.0
 
             if order.currency_id.name == 'USD':
                 if not order.tc_pactado or order.tc_pactado <= 0:
@@ -120,7 +145,6 @@ class SaleOrder(models.Model):
                 )
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
-
             else:
                 lineas_recurrentes = order.order_line.filtered(
                     lambda l: l.product_id.recurring_invoice
@@ -135,8 +159,11 @@ class SaleOrder(models.Model):
                 if plan_renta:
                     order.write({'plan_id': plan_renta.id})
 
-            # Fijar cuota calculada ANTES de confirmar (moneda era USD)
-            order.write({'cuota_mensual_mxn': cuota_fija})
+            # Fijar cuota y marcar como fijada para que no se recompute
+            order.write({
+                'cuota_mensual_mxn': cuota_fija,
+                'cuota_fijada': True,
+            })
 
         result = super().action_confirm()
 
