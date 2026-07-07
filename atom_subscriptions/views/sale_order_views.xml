@@ -6,7 +6,8 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
 
-            <xpath expr="//field[@name='plan_id']" position="after">
+            <!-- Insertar ANTES de lista de precios para quedar en grupo separado -->
+            <xpath expr="//field[@name='pricelist_id']" position="before">
                 <field name="meses_renta"
                     invisible="not is_subscription"
                     placeholder="Ej: 48"
