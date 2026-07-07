@@ -17,10 +17,11 @@ class SaleOrder(models.Model):
         help='Número de meses del contrato de renta.',
     )
 
+    # Campo no computado — se calcula on-the-fly en onchange y se fija al confirmar
     cuota_mensual_mxn = fields.Float(
-        string='Cuota Mensual MXN',
+        string='Cuota Mensual MXN $',
         digits=(16, 2),
-        compute='_compute_cuota_mensual',
+        readonly=True,
         store=True,
         help='Cuota mensual en MXN = Total USD × TC Pactado ÷ Meses.',
     )
@@ -43,30 +44,31 @@ class SaleOrder(models.Model):
         for order in self:
             order.asset_count = len(order.asset_ids)
 
-    @api.depends('order_line.price_subtotal', 'order_line.product_id.recurring_invoice',
-                 'tc_pactado', 'currency_id', 'meses_renta')
-    def _compute_cuota_mensual(self):
-        for order in self:
-            cuota = 0.0
-            meses = order.meses_renta
-            if meses > 0:
-                total_recurrente = sum(
-                    line.price_subtotal
-                    for line in order.order_line
-                    if line.product_id.recurring_invoice
-                )
-                if total_recurrente > 0:
-                    if order.currency_id.name == 'USD' and order.tc_pactado > 0:
-                        # USD × TC ÷ meses = MXN por mes
-                        cuota = (total_recurrente * order.tc_pactado) / meses
-                    elif order.currency_id.name == 'MXN':
-                        cuota = total_recurrente / meses
-            order.cuota_mensual_mxn = cuota
+    def _calcular_cuota_mxn(self):
+        """Calcula la cuota mensual en MXN según moneda, TC y meses."""
+        self.ensure_one()
+        meses = self.meses_renta
+        if meses <= 0:
+            return 0.0
+        total_recurrente = sum(
+            line.price_subtotal
+            for line in self.order_line
+            if line.product_id.recurring_invoice
+        )
+        if total_recurrente <= 0:
+            return 0.0
+        if self.currency_id.name == 'USD' and self.tc_pactado > 0:
+            return (total_recurrente * self.tc_pactado) / meses
+        elif self.currency_id.name == 'MXN':
+            return total_recurrente / meses
+        return 0.0
 
-    @api.onchange('tc_pactado', 'meses_renta', 'currency_id')
+    @api.onchange('tc_pactado', 'meses_renta', 'currency_id', 'order_line')
     def _onchange_renta_fields(self):
-        if self.meses_renta > 0:
-            if self.currency_id.name == 'USD' and not self.tc_pactado:
+        """Actualiza la cuota en tiempo real mientras edita la cotización."""
+        for order in self:
+            order.cuota_mensual_mxn = order._calcular_cuota_mxn()
+            if order.meses_renta > 0 and order.currency_id.name == 'USD' and not order.tc_pactado:
                 return {
                     'warning': {
                         'title': 'TC Pactado requerido',
@@ -79,7 +81,12 @@ class SaleOrder(models.Model):
         for order in self:
             if not order.meses_renta or order.meses_renta <= 0:
                 continue
+
             meses = order.meses_renta
+
+            # Calcular y fijar cuota ANTES de modificar precios
+            cuota_fija = order._calcular_cuota_mxn()
+
             if order.currency_id.name == 'USD':
                 if not order.tc_pactado or order.tc_pactado <= 0:
                     raise UserError(
@@ -114,16 +121,12 @@ class SaleOrder(models.Model):
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
 
-                # Crear orden de entrega vinculada a la OV
-                self._crear_entrega_renta(order, lineas_recurrentes)
-
             else:
                 lineas_recurrentes = order.order_line.filtered(
                     lambda l: l.product_id.recurring_invoice
                 )
                 for line in lineas_recurrentes:
                     line.write({'price_unit': line.price_unit / meses})
-                self._crear_entrega_renta(order, lineas_recurrentes)
 
             if not order.plan_id:
                 plan_renta = self.env['sale.subscription.plan'].search(
@@ -132,11 +135,23 @@ class SaleOrder(models.Model):
                 if plan_renta:
                     order.write({'plan_id': plan_renta.id})
 
-        return super().action_confirm()
+            # Fijar cuota calculada ANTES de confirmar (moneda era USD)
+            order.write({'cuota_mensual_mxn': cuota_fija})
+
+        result = super().action_confirm()
+
+        # Crear entregas después de confirmar
+        for order in self:
+            if order.meses_renta and order.meses_renta > 0:
+                lineas_recurrentes = order.order_line.filtered(
+                    lambda l: l.product_id.recurring_invoice
+                )
+                self._crear_entrega_renta(order, lineas_recurrentes)
+
+        return result
 
     def _crear_entrega_renta(self, order, lineas_recurrentes):
-        """Crea una orden de entrega vinculada a la OV para los productos recurrentes."""
-        # Buscar tipo de operación de entrega del almacén principal
+        """Crea orden de entrega vinculada a la OV para productos recurrentes."""
         picking_type = self.env['stock.picking.type'].search([
             ('code', '=', 'outgoing'),
             ('warehouse_id.lot_stock_id.complete_name', 'ilike', 'WH-NA'),
@@ -174,7 +189,6 @@ class SaleOrder(models.Model):
             'move_ids': moves,
         })
 
-        # Vincular a la OV via procurement_group
         if order.procurement_group_id:
             picking.write({'group_id': order.procurement_group_id.id})
 
