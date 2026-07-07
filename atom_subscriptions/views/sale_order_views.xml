@@ -6,38 +6,29 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
 
-            <!-- Insertar campos de renta después del campo de plan -->
             <xpath expr="//field[@name='plan_id']" position="after">
 
-                <!-- Plazo en meses (libre, el usuario escribe el número) -->
+                <!-- Plazo en meses -->
                 <field
                     name="meses_renta"
-                    attrs="{'invisible': [('is_subscription', '=', False)]}"
+                    invisible="not is_subscription"
                     placeholder="Ej: 48"
                 />
 
-                <!-- TC Pactado: visible solo cuando hay meses y moneda USD -->
+                <!-- TC Pactado: solo cuando hay meses y moneda es USD -->
                 <field
                     name="tc_pactado"
-                    attrs="{
-                        'invisible': ['|',
-                            ('meses_renta', '=', 0),
-                            ('currency_id.name', '!=', 'USD')
-                        ],
-                        'required': [
-                            ('meses_renta', '>', 0),
-                            ('currency_id.name', '=', 'USD')
-                        ]
-                    }"
+                    invisible="meses_renta == 0 or currency_id != %(base.USD)d"
+                    required="meses_renta > 0 and currency_id == %(base.USD)d"
                     widget="float"
                     options="{'digits': [16, 4]}"
                     placeholder="Ej: 17.50"
                 />
 
-                <!-- Cuota mensual calculada en tiempo real -->
+                <!-- Cuota mensual calculada -->
                 <field
                     name="cuota_mensual_mxn"
-                    attrs="{'invisible': [('meses_renta', '=', 0)]}"
+                    invisible="meses_renta == 0"
                     readonly="1"
                     widget="monetary"
                 />
