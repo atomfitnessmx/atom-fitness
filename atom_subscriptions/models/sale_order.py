@@ -242,3 +242,28 @@ class SaleOrderLine(models.Model):
         readonly=True,
         help='Precio original en USD antes de conversión a cuota mensual MXN.',
     )
+
+
+class SaleOrderLineRenta(models.Model):
+    _inherit = 'sale.order.line'
+
+    def _compute_price_unit(self):
+        """Si la orden es de renta con meses definidos y está en borrador,
+        no recalcular el precio — el usuario lo pone manualmente en USD."""
+        lines_renta = self.filtered(
+            lambda l: l.order_id.meses_renta > 0
+            and l.order_id.state in ['draft', 'sent']
+            and l.product_id.recurring_invoice
+            and l.price_unit > 0
+        )
+        lines_normales = self - lines_renta
+
+        # Procesar líneas normales con el método original
+        if lines_normales:
+            super(SaleOrderLineRenta, lines_normales)._compute_price_unit()
+
+        # Las líneas de renta no se recomputan — mantienen el precio del usuario
+        # Solo inicializar si están en 0
+        for line in lines_renta:
+            if not line.price_unit:
+                super(SaleOrderLineRenta, line)._compute_price_unit()
