@@ -23,42 +23,58 @@ class SaleOrder(models.Model):
         readonly=True,
         store=True,
         compute='_compute_cuota_mensual',
-        help='Cuota mensual en MXN, antes de IVA = Total USD del equipo x TC Pactado / Meses. '
-             'El IVA se agrega por separado al facturar.',
+        help='Cuota mensual en MXN, antes de IVA = Total USD del equipo x TC Pactado / Meses.',
     )
 
-    cuota_fijada = fields.Boolean(
-        string='Cuota Fijada',
-        default=False,
-        copy=False,
-    )
+    cuota_fijada = fields.Boolean(string='Cuota Fijada', default=False, copy=False)
 
     es_arrendamiento = fields.Boolean(
-        string='Es Arrendamiento',
-        default=False,
-        copy=False,
+        string='Es Arrendamiento', default=False, copy=False,
         help='Indica que esta cotización fue convertida a contrato de arrendamiento.',
     )
 
     tiene_producto_rentable = fields.Boolean(
         string='Tiene Producto Rentable',
         compute='_compute_tiene_producto_rentable',
-        help='True si al menos una línea tiene un producto de categoría marcada como rentable.',
+    )
+
+    # ------- Información del contrato -------
+    nombre_contrato = fields.Char(
+        string='Nombre del Contrato',
+        copy=False,
+        help='Nombre con el que se reconocerá el contrato de arrendamiento. '
+             'Si se deja vacío, al confirmar se usa el folio de la orden. '
+             'Con este nombre se crea la cuenta analítica del contrato.',
+    )
+
+    valor_contrato_usd = fields.Float(
+        string='Valor del Contrato USD',
+        digits=(16, 2), readonly=True, copy=False,
+        help='Valor total del equipo del contrato en USD (fijado al convertir).',
+    )
+
+    valor_contrato_mxn = fields.Float(
+        string='Valor del Contrato MXN',
+        digits=(16, 2), readonly=True, copy=False,
+        help='Valor total del contrato en MXN = USD x TC Pactado (fijado al confirmar).',
+    )
+
+    cuenta_analitica_id = fields.Many2one(
+        'account.analytic.account',
+        string='Cuenta Analítica del Contrato',
+        readonly=True, copy=False,
+        help='Cuenta analítica del plan "Renta" donde se registran ingresos, '
+             'inversión y depreciación de este contrato.',
     )
 
     asset_ids = fields.Many2many(
         comodel_name='account.asset',
         relation='sale_order_asset_rel',
-        column1='order_id',
-        column2='asset_id',
+        column1='order_id', column2='asset_id',
         string='Activos Fijos',
-        help='Activos fijos capitalizados asociados a este contrato de arrendamiento.',
     )
 
-    asset_count = fields.Integer(
-        string='# Activos Fijos',
-        compute='_compute_asset_count',
-    )
+    asset_count = fields.Integer(string='# Activos Fijos', compute='_compute_asset_count')
 
     @api.depends('asset_ids')
     def _compute_asset_count(self):
@@ -78,28 +94,21 @@ class SaleOrder(models.Model):
                  'order_line.product_id.default_code',
                  'tc_pactado', 'currency_id', 'meses_renta', 'cuota_fijada')
     def _compute_cuota_mensual(self):
-        # El producto de arrendamiento usa un impuesto SIN precio incluido
-        # (16% IVA (servicio)), así que price_unit ya es el monto neto
-        # directo — no hay que tocar price_subtotal ni hacer conversiones.
         for order in self:
             if order.cuota_fijada:
                 continue
-
             meses = order.meses_renta
             if meses <= 0:
                 order.cuota_mensual_mxn = 0.0
                 continue
-
             total_equipo = sum(
                 line.price_unit * line.product_uom_qty
                 for line in order.order_line
                 if line.product_id.default_code == 'ARR-GYM-MENSUAL'
             )
-
             if total_equipo <= 0:
                 order.cuota_mensual_mxn = 0.0
                 continue
-
             if order.currency_id.name == 'USD' and order.tc_pactado > 0:
                 order.cuota_mensual_mxn = (total_equipo * order.tc_pactado) / meses
             elif order.currency_id.name == 'MXN':
@@ -119,8 +128,6 @@ class SaleOrder(models.Model):
             }
 
     def action_convertir_arrendamiento(self):
-        """Convierte las líneas de equipo rentable en una sola línea del
-        servicio de arrendamiento, sumando su valor total en USD."""
         self.ensure_one()
 
         if self.state not in ('draft', 'sent'):
@@ -128,14 +135,12 @@ class SaleOrder(models.Model):
                 'Solo se puede convertir a arrendamiento una cotización en '
                 'estado Borrador o Cotización enviada.'
             )
-
         if self.es_arrendamiento:
             raise UserError('Esta cotización ya fue convertida a arrendamiento.')
 
         lineas_rentables = self.order_line.filtered(
             lambda l: l.product_id.categ_id.es_categoria_rentable and not l.display_type
         )
-
         if not lineas_rentables:
             raise UserError(
                 'No hay productos de categorías rentables en esta cotización. '
@@ -143,18 +148,20 @@ class SaleOrder(models.Model):
                 'marcada como rentable.'
             )
 
-        # Suma directa del valor capturado por el vendedor (price_unit x qty).
         total_equipo = sum(
             line.price_unit * line.product_uom_qty for line in lineas_rentables
         )
 
-        # Marcar como arrendamiento ANTES de tocar las líneas, para que
-        # nuestra protección de precio esté activa durante todo el resto
-        # del proceso.
-        self.write({'es_arrendamiento': True})
+        self.write({
+            'es_arrendamiento': True,
+            'valor_contrato_usd': total_equipo,
+        })
 
         for line in lineas_rentables:
-            line.write({'price_unit': 0.0})
+            line.write({
+                'precio_venta_usd': line.price_unit,
+                'price_unit': 0.0,
+            })
 
         producto_renta = self.env['product.template'].search([
             ('default_code', '=', 'ARR-GYM-MENSUAL')
@@ -178,6 +185,26 @@ class SaleOrder(models.Model):
             [('name', '=', 'Renta')], limit=1
         )
         self.write({'plan_id': plan_renta.id if plan_renta else False})
+
+    def _crear_cuenta_analitica_contrato(self):
+        """Crea (una sola vez) la cuenta analítica del contrato dentro del
+        plan analítico 'Renta' y la devuelve."""
+        self.ensure_one()
+        if self.cuenta_analitica_id:
+            return self.cuenta_analitica_id
+
+        plan = self.env['account.analytic.plan'].search([('name', '=', 'Renta')], limit=1)
+        if not plan:
+            plan = self.env['account.analytic.plan'].create({'name': 'Renta'})
+
+        nombre = self.nombre_contrato or self.name
+        cuenta = self.env['account.analytic.account'].create({
+            'name': nombre,
+            'plan_id': plan.id,
+            'partner_id': self.partner_id.id,
+        })
+        self.write({'cuenta_analitica_id': cuenta.id})
+        return cuenta
 
     def action_confirm(self):
         for order in self:
@@ -210,6 +237,7 @@ class SaleOrder(models.Model):
                         f'Debes ingresar el TC Pactado antes de confirmar.'
                     )
                 cuota = (total_equipo * order.tc_pactado) / meses
+                valor_mxn = total_equipo * order.tc_pactado
                 pricelist_mxn = self.env['product.pricelist'].search(
                     [('currency_id.name', '=', 'MXN')], limit=1
                 )
@@ -217,11 +245,18 @@ class SaleOrder(models.Model):
                     order.write({'pricelist_id': pricelist_mxn.id})
             else:
                 cuota = total_equipo / meses
+                valor_mxn = total_equipo
 
-            linea_servicio.write({'price_unit': cuota})
+            # Cuenta analítica del contrato + distribución en la línea de renta
+            cuenta = order._crear_cuenta_analitica_contrato()
+            linea_servicio.write({
+                'price_unit': cuota,
+                'analytic_distribution': {str(cuenta.id): 100},
+            })
 
             order.write({
                 'cuota_mensual_mxn': cuota,
+                'valor_contrato_mxn': valor_mxn,
                 'cuota_fijada': True,
             })
 
@@ -242,12 +277,14 @@ class SaleOrder(models.Model):
 class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
 
+    precio_venta_usd = fields.Float(
+        string='Precio Cotizado USD',
+        digits=(16, 2), readonly=True, copy=False,
+        help='Precio original cotizado en USD antes de la conversión a arrendamiento.',
+    )
+
     def _compute_price_unit(self):
-        """Una vez que una orden queda marcada como arrendamiento, ninguna
-        de sus líneas se recalcula automáticamente vía el motor de precios
-        de Odoo — el precio siempre lo controla nuestro flujo."""
         lineas_arrendamiento = self.filtered(lambda l: l.order_id.es_arrendamiento)
         lineas_normales = self - lineas_arrendamiento
-
         if lineas_normales:
             super(SaleOrderLine, lineas_normales)._compute_price_unit()

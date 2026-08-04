@@ -5,14 +5,6 @@ class StockPicking(models.Model):
     _inherit = 'stock.picking'
 
     def button_validate(self):
-        """Al validar la entrega de una orden de arrendamiento se ejecuta la
-        capitalización automática completa:
-          1. Crea el Activo Fijo de cada equipo (basado en el modelo
-             'Equipo de gimnasio en renta': 120 meses, lineal, mensual).
-          2. Lo confirma (queda corriendo, depreciación programada).
-          3. Publica el asiento de reclasificación cuenta puente -> AF.
-          4. Vincula los activos a la suscripción.
-        """
         res = super().button_validate()
         for picking in self:
             if (
@@ -45,6 +37,11 @@ class StockPicking(models.Model):
             ))
             return
 
+        # Cuenta analítica del contrato (ya existe desde la confirmación;
+        # fallback por robustez)
+        cuenta_analitica = order.cuenta_analitica_id or order._crear_cuenta_analitica_contrato()
+        distribucion = {str(cuenta_analitica.id): 100} if cuenta_analitica else False
+
         activos_creados = self.env['account.asset']
         total_reclasificar = 0.0
 
@@ -60,7 +57,7 @@ class StockPicking(models.Model):
             if not valor:
                 continue
 
-            asset = self.env['account.asset'].create({
+            vals_asset = {
                 'name': f"{move.product_id.name} — {order.name}",
                 'model_id': modelo.id,
                 'original_value': valor,
@@ -73,8 +70,12 @@ class StockPicking(models.Model):
                 'method_number': modelo.method_number,
                 'method_period': modelo.method_period,
                 'prorata_computation_type': modelo.prorata_computation_type,
-            })
-            asset.validate()  # confirmar: queda corriendo con depreciación programada
+            }
+            if distribucion:
+                vals_asset['analytic_distribution'] = distribucion
+
+            asset = self.env['account.asset'].create(vals_asset)
+            asset.validate()
             activos_creados |= asset
             total_reclasificar += valor
 
@@ -87,16 +88,19 @@ class StockPicking(models.Model):
             diario_misc = self.env['account.journal'].search(
                 [('code', '=', 'MISC'), ('type', '=', 'general')], limit=1
             ) or modelo.journal_id
+            linea_cargo = {
+                'account_id': modelo.account_asset_id.id,
+                'name': f'Capitalización equipo {order.name}',
+                'debit': total_reclasificar,
+                'credit': 0.0,
+            }
+            if distribucion:
+                linea_cargo['analytic_distribution'] = distribucion
             asiento = self.env['account.move'].create({
                 'journal_id': diario_misc.id,
                 'ref': f'Capitalización equipo arrendamiento {order.name} ({self.name})',
                 'line_ids': [
-                    (0, 0, {
-                        'account_id': modelo.account_asset_id.id,
-                        'name': f'Capitalización equipo {order.name}',
-                        'debit': total_reclasificar,
-                        'credit': 0.0,
-                    }),
+                    (0, 0, linea_cargo),
                     (0, 0, {
                         'account_id': cuenta_puente.id,
                         'name': f'Reclasificación cuenta puente {order.name}',
@@ -105,11 +109,11 @@ class StockPicking(models.Model):
                     }),
                 ],
             })
-            asiento.action_post()  # publicado, cero manual
+            asiento.action_post()
 
             self.message_post(body=(
                 f'Arrendamiento {order.name}: {len(activos_creados)} Activo(s) '
-                f'Fijo(s) creados y confirmados (120 meses, lineal), asiento de '
-                f'reclasificación {asiento.name} publicado, activos vinculados '
+                f'Fijo(s) creados y confirmados, asiento {asiento.name} publicado, '
+                f'analítica "{cuenta_analitica.name}" asignada, activos vinculados '
                 f'a la suscripción.'
             ))
