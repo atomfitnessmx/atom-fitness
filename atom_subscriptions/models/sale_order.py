@@ -227,3 +227,25 @@ class SaleOrder(models.Model):
             'domain': [('id', 'in', self.asset_ids.ids)],
             'context': {'default_partner_id': self.partner_id.id},
         }
+
+
+class SaleOrderLine(models.Model):
+    _inherit = 'sale.order.line'
+
+    def _compute_price_unit(self):
+        """Odoo recalcula automáticamente el precio de cualquier línea con
+        producto recurrente (recurring_invoice=True), sobreescribiendo
+        cualquier valor manual — incluso el que fija nuestro flujo de
+        arrendamiento. Para las líneas de contratos de arrendamiento
+        (order_id.es_arrendamiento=True) el precio SIEMPRE lo controla
+        nuestro código (action_convertir_arrendamiento / action_confirm),
+        nunca el motor de pricing de suscripciones de Odoo."""
+        lineas_arrendamiento = self.filtered(
+            lambda l: l.order_id.es_arrendamiento and l.product_id.recurring_invoice
+        )
+        lineas_normales = self - lineas_arrendamiento
+
+        if lineas_normales:
+            super(SaleOrderLine, lineas_normales)._compute_price_unit()
+        # Las líneas de arrendamiento no se tocan: conservan el precio
+        # que les asignó nuestro flujo.
