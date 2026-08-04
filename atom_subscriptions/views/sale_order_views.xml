@@ -42,17 +42,36 @@
                 <field name="cuota_mensual_mxn"
                     invisible="meses_renta == 0"
                     readonly="1"
-                    string="Cuota Mensual MXN $"/>
+                    string="Cuota Mensual MXN $ (antes de IVA)"/>
             </xpath>
 
-            <!-- Pestaña Activos Fijos -->
+            <!-- Columna Precio Cotizado USD en las líneas -->
+            <xpath expr="//field[@name='order_line']/tree/field[@name='price_unit']" position="after">
+                <field name="precio_venta_usd" optional="show" string="Precio Cotizado USD"/>
+            </xpath>
+
+            <!-- Pestaña Contrato de Arrendamiento -->
             <xpath expr="//page[@name='order_lines']" position="after">
-                <page string="Activos Fijos" invisible="not es_arrendamiento">
-                    <field name="asset_ids" widget="many2many_tags"/>
-                    <p class="text-muted" invisible="asset_count != 0">
-                        Una vez realizada la baja de inventario y el alta del Activo Fijo en
-                        Contabilidad, vincúlalo aquí para monitorear su depreciación desde
-                        este contrato de arrendamiento.
+                <page string="Contrato de Arrendamiento" invisible="not es_arrendamiento">
+                    <group>
+                        <group string="Identificación">
+                            <field name="nombre_contrato"
+                                readonly="state not in ('draft','sent')"
+                                placeholder="Ej: RENTA-GYM-CDMX-001 (vacío = folio de la orden)"/>
+                            <field name="cuenta_analitica_id"/>
+                        </group>
+                        <group string="Valores del Contrato">
+                            <field name="valor_contrato_usd"/>
+                            <field name="valor_contrato_mxn"/>
+                            <field name="meses_renta" readonly="1" string="Plazo (meses)"/>
+                            <field name="tc_pactado" readonly="1" string="TC Pactado"/>
+                            <field name="cuota_mensual_mxn" readonly="1" string="Cuota Mensual MXN (antes de IVA)"/>
+                        </group>
+                    </group>
+                    <p class="text-muted">
+                        La cuenta analítica del contrato se crea automáticamente al confirmar,
+                        dentro del plan analítico "Renta". En ella se registran las facturas de
+                        renta, la inversión capitalizada y la depreciación mensual de los equipos.
                     </p>
                 </page>
             </xpath>
