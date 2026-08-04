@@ -38,7 +38,6 @@ class SaleOrder(models.Model):
         compute='_compute_tiene_producto_rentable',
     )
 
-    # ------- Información del contrato -------
     nombre_contrato = fields.Char(
         string='Nombre del Contrato',
         copy=False,
@@ -50,21 +49,17 @@ class SaleOrder(models.Model):
     valor_contrato_usd = fields.Float(
         string='Valor del Contrato USD',
         digits=(16, 2), readonly=True, copy=False,
-        help='Valor total del equipo del contrato en USD (fijado al convertir).',
     )
 
     valor_contrato_mxn = fields.Float(
         string='Valor del Contrato MXN',
         digits=(16, 2), readonly=True, copy=False,
-        help='Valor total del contrato en MXN = USD x TC Pactado (fijado al confirmar).',
     )
 
     cuenta_analitica_id = fields.Many2one(
         'account.analytic.account',
         string='Cuenta Analítica del Contrato',
         readonly=True, copy=False,
-        help='Cuenta analítica del plan "Renta" donde se registran ingresos, '
-             'inversión y depreciación de este contrato.',
     )
 
     asset_ids = fields.Many2many(
@@ -187,8 +182,6 @@ class SaleOrder(models.Model):
         self.write({'plan_id': plan_renta.id if plan_renta else False})
 
     def _crear_cuenta_analitica_contrato(self):
-        """Crea (una sola vez) la cuenta analítica del contrato dentro del
-        plan analítico 'Renta' y la devuelve."""
         self.ensure_one()
         if self.cuenta_analitica_id:
             return self.cuenta_analitica_id
@@ -247,7 +240,6 @@ class SaleOrder(models.Model):
                 cuota = total_equipo / meses
                 valor_mxn = total_equipo
 
-            # Cuenta analítica del contrato + distribución en la línea de renta
             cuenta = order._crear_cuenta_analitica_contrato()
             linea_servicio.write({
                 'price_unit': cuota,
@@ -288,3 +280,17 @@ class SaleOrderLine(models.Model):
         lineas_normales = self - lineas_arrendamiento
         if lineas_normales:
             super(SaleOrderLine, lineas_normales)._compute_price_unit()
+
+    @api.depends('qty_invoiced', 'qty_delivered', 'product_uom_qty', 'state',
+                 'order_id.es_arrendamiento', 'product_id.default_code')
+    def _compute_qty_to_invoice(self):
+        """En contratos de arrendamiento, SOLO la línea del servicio de renta
+        es facturable. Las líneas del equipo físico (entregadas en $0 y
+        capitalizadas como Activo Fijo) nunca deben facturarse: si llegaran a
+        una factura, la contabilidad anglosajona reconocería un costo de venta
+        que duplicaría la capitalización."""
+        super()._compute_qty_to_invoice()
+        for line in self:
+            if (line.order_id.es_arrendamiento
+                    and line.product_id.default_code != 'ARR-GYM-MENSUAL'):
+                line.qty_to_invoice = 0.0
