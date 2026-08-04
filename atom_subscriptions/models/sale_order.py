@@ -73,7 +73,7 @@ class SaleOrder(models.Model):
                 if not line.display_type
             )
 
-    @api.depends('order_line.price_subtotal', 'order_line.product_id.recurring_invoice',
+    @api.depends('order_line.price_subtotal', 'order_line.product_id.default_code',
                  'tc_pactado', 'currency_id', 'meses_renta', 'cuota_fijada')
     def _compute_cuota_mensual(self):
         for order in self:
@@ -88,7 +88,7 @@ class SaleOrder(models.Model):
             total_recurrente = sum(
                 line.price_subtotal
                 for line in order.order_line
-                if line.product_id.recurring_invoice
+                if line.product_id.default_code == 'ARR-GYM-MENSUAL'
             )
 
             if total_recurrente <= 0:
@@ -140,11 +140,9 @@ class SaleOrder(models.Model):
 
         total_equipo = sum(lineas_rentables.mapped('price_subtotal'))
 
-        # Poner en $0 las líneas originales del equipo (conserva referencia y trazabilidad)
         for line in lineas_rentables:
             line.write({'price_unit': 0.0})
 
-        # Buscar el producto de servicio de arrendamiento
         producto_renta = self.env['product.template'].search([
             ('default_code', '=', 'ARR-GYM-MENSUAL')
         ], limit=1)
@@ -155,7 +153,6 @@ class SaleOrder(models.Model):
                 'Contacta a soporte antes de continuar.'
             )
 
-        # Crear la línea consolidada del servicio de renta
         self.env['sale.order.line'].create({
             'order_id': self.id,
             'product_id': producto_renta.product_variant_id.id,
@@ -164,7 +161,6 @@ class SaleOrder(models.Model):
             'name': producto_renta.name,
         })
 
-        # Asignar el plan de suscripción "Renta"
         plan_renta = self.env['sale.subscription.plan'].search(
             [('name', '=', 'Renta')], limit=1
         )
@@ -182,16 +178,21 @@ class SaleOrder(models.Model):
             meses = order.meses_renta
 
             linea_servicio = order.order_line.filtered(
-                lambda l: l.product_id.recurring_invoice
+                lambda l: l.product_id.default_code == 'ARR-GYM-MENSUAL'
             )
             if not linea_servicio:
                 raise UserError(
                     f'La cotización {order.name} está marcada como arrendamiento '
-                    f'pero no tiene la línea del servicio de renta. '
+                    f'pero no tiene la línea del servicio de renta (ARR-GYM-MENSUAL). '
                     f'Usa el botón "Convertir a Arrendamiento" antes de confirmar.'
                 )
+            if len(linea_servicio) > 1:
+                raise UserError(
+                    f'La cotización {order.name} tiene más de una línea del servicio '
+                    f'de arrendamiento. Debe existir solo una.'
+                )
 
-            total_equipo = sum(linea_servicio.mapped('price_unit'))
+            total_equipo = linea_servicio.price_unit
 
             if order.currency_id.name == 'USD':
                 if not order.tc_pactado or order.tc_pactado <= 0:
@@ -233,19 +234,11 @@ class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
 
     def _compute_price_unit(self):
-        """Odoo recalcula automáticamente el precio de cualquier línea con
-        producto recurrente (recurring_invoice=True), sobreescribiendo
-        cualquier valor manual — incluso el que fija nuestro flujo de
-        arrendamiento. Para las líneas de contratos de arrendamiento
-        (order_id.es_arrendamiento=True) el precio SIEMPRE lo controla
-        nuestro código (action_convertir_arrendamiento / action_confirm),
-        nunca el motor de pricing de suscripciones de Odoo."""
         lineas_arrendamiento = self.filtered(
-            lambda l: l.order_id.es_arrendamiento and l.product_id.recurring_invoice
+            lambda l: l.order_id.es_arrendamiento
+            and l.product_id.default_code == 'ARR-GYM-MENSUAL'
         )
         lineas_normales = self - lineas_arrendamiento
 
         if lineas_normales:
             super(SaleOrderLine, lineas_normales)._compute_price_unit()
-        # Las líneas de arrendamiento no se tocan: conservan el precio
-        # que les asignó nuestro flujo.
