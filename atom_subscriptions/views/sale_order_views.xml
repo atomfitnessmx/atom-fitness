@@ -6,6 +6,29 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
 
+            <!-- Botón Convertir a Arrendamiento -->
+            <xpath expr="//button[@name='action_confirm'][1]" position="before">
+                <field name="tiene_producto_rentable" invisible="1"/>
+                <field name="es_arrendamiento" invisible="1"/>
+                <button name="action_convertir_arrendamiento"
+                    type="object"
+                    string="Convertir a Arrendamiento"
+                    class="btn-secondary"
+                    invisible="not tiene_producto_rentable or es_arrendamiento or state not in ('draft','sent')"
+                    confirm="Esto pondrá en $0 las líneas de equipo cotizadas y creará una línea consolidada del servicio de arrendamiento. ¿Continuar?"/>
+            </xpath>
+
+            <!-- Smartbutton Activos Fijos -->
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_view_assets"
+                    type="object"
+                    class="oe_stat_button"
+                    icon="fa-cogs"
+                    invisible="not es_arrendamiento or asset_count == 0">
+                    <field name="asset_count" widget="statinfo" string="Activos Fijos"/>
+                </button>
+            </xpath>
+
             <!-- Campos de renta después del plan_block -->
             <xpath expr="//div[@name='plan_block']" position="after">
                 <field name="meses_renta"
@@ -22,6 +45,31 @@
                     string="Cuota Mensual MXN $"/>
             </xpath>
 
+            <!-- Pestaña Activos Fijos -->
+            <xpath expr="//page[@name='order_lines']" position="after">
+                <page string="Activos Fijos" invisible="not es_arrendamiento">
+                    <field name="asset_ids" widget="many2many_tags"/>
+                    <p class="text-muted" invisible="asset_count != 0">
+                        Una vez realizada la baja de inventario y el alta del Activo Fijo en
+                        Contabilidad, vincúlalo aquí para monitorear su depreciación desde
+                        este contrato de arrendamiento.
+                    </p>
+                </page>
+            </xpath>
+
         </field>
     </record>
+
+    <!-- Campo rentable en categoría de producto -->
+    <record id="view_category_form_atom_subscriptions" model="ir.ui.view">
+        <field name="name">product.category.form.atom.subscriptions</field>
+        <field name="model">product.category</field>
+        <field name="inherit_id" ref="product.product_category_form_view"/>
+        <field name="arch" type="xml">
+            <field name="name" position="after">
+                <field name="es_categoria_rentable"/>
+            </field>
+        </field>
+    </record>
+
 </odoo>

@@ -8,13 +8,13 @@ class SaleOrder(models.Model):
     tc_pactado = fields.Float(
         string='TC Pactado (USD/MXN)',
         digits=(16, 4),
-        help='Tipo de cambio acordado con el cliente al firmar el contrato.',
+        help='Tipo de cambio acordado con el cliente al firmar el contrato de arrendamiento.',
     )
 
     meses_renta = fields.Integer(
         string='Plazo (meses)',
         default=0,
-        help='Número de meses del contrato de renta.',
+        help='Número de meses del contrato de arrendamiento.',
     )
 
     cuota_mensual_mxn = fields.Float(
@@ -23,14 +23,26 @@ class SaleOrder(models.Model):
         readonly=True,
         store=True,
         compute='_compute_cuota_mensual',
-        help='Cuota mensual en MXN = Total USD × TC Pactado ÷ Meses.',
+        help='Cuota mensual fija en MXN = Total USD del equipo x TC Pactado / Meses.',
     )
 
-    # Flag para saber si la cuota ya fue fijada al confirmar
     cuota_fijada = fields.Boolean(
         string='Cuota Fijada',
         default=False,
         copy=False,
+    )
+
+    es_arrendamiento = fields.Boolean(
+        string='Es Arrendamiento',
+        default=False,
+        copy=False,
+        help='Indica que esta cotización fue convertida a contrato de arrendamiento.',
+    )
+
+    tiene_producto_rentable = fields.Boolean(
+        string='Tiene Producto Rentable',
+        compute='_compute_tiene_producto_rentable',
+        help='True si al menos una línea tiene un producto de categoría marcada como rentable.',
     )
 
     asset_ids = fields.Many2many(
@@ -39,6 +51,7 @@ class SaleOrder(models.Model):
         column1='order_id',
         column2='asset_id',
         string='Activos Fijos',
+        help='Activos fijos capitalizados asociados a este contrato de arrendamiento.',
     )
 
     asset_count = fields.Integer(
@@ -51,11 +64,19 @@ class SaleOrder(models.Model):
         for order in self:
             order.asset_count = len(order.asset_ids)
 
+    @api.depends('order_line.product_id.categ_id.es_categoria_rentable')
+    def _compute_tiene_producto_rentable(self):
+        for order in self:
+            order.tiene_producto_rentable = any(
+                line.product_id.categ_id.es_categoria_rentable
+                for line in order.order_line
+                if not line.display_type
+            )
+
     @api.depends('order_line.price_subtotal', 'order_line.product_id.recurring_invoice',
                  'tc_pactado', 'currency_id', 'meses_renta', 'cuota_fijada')
     def _compute_cuota_mensual(self):
         for order in self:
-            # Si ya fue fijada al confirmar, no recalcular
             if order.cuota_fijada:
                 continue
 
@@ -92,25 +113,85 @@ class SaleOrder(models.Model):
                 }
             }
 
+    def action_convertir_arrendamiento(self):
+        """Convierte las líneas de equipo rentable en una sola línea del
+        servicio de arrendamiento, sumando su valor total en USD."""
+        self.ensure_one()
+
+        if self.state not in ('draft', 'sent'):
+            raise UserError(
+                'Solo se puede convertir a arrendamiento una cotización en '
+                'estado Borrador o Cotización enviada.'
+            )
+
+        if self.es_arrendamiento:
+            raise UserError('Esta cotización ya fue convertida a arrendamiento.')
+
+        lineas_rentables = self.order_line.filtered(
+            lambda l: l.product_id.categ_id.es_categoria_rentable and not l.display_type
+        )
+
+        if not lineas_rentables:
+            raise UserError(
+                'No hay productos de categorías rentables en esta cotización. '
+                'Verifica que el producto cotizado pertenezca a una categoría '
+                'marcada como rentable.'
+            )
+
+        total_equipo = sum(lineas_rentables.mapped('price_subtotal'))
+
+        # Poner en $0 las líneas originales del equipo (conserva referencia y trazabilidad)
+        for line in lineas_rentables:
+            line.write({'price_unit': 0.0})
+
+        # Buscar el producto de servicio de arrendamiento
+        producto_renta = self.env['product.template'].search([
+            ('default_code', '=', 'ARR-GYM-MENSUAL')
+        ], limit=1)
+        if not producto_renta:
+            raise UserError(
+                'No se encontró el producto "Servicio de arrendamiento operativo '
+                'mensual de equipo de gimnasio" (código ARR-GYM-MENSUAL). '
+                'Contacta a soporte antes de continuar.'
+            )
+
+        # Crear la línea consolidada del servicio de renta
+        self.env['sale.order.line'].create({
+            'order_id': self.id,
+            'product_id': producto_renta.product_variant_id.id,
+            'product_uom_qty': 1,
+            'price_unit': total_equipo,
+            'name': producto_renta.name,
+        })
+
+        # Asignar el plan de suscripción "Renta"
+        plan_renta = self.env['sale.subscription.plan'].search(
+            [('name', '=', 'Renta')], limit=1
+        )
+
+        self.write({
+            'plan_id': plan_renta.id if plan_renta else False,
+            'es_arrendamiento': True,
+        })
+
     def action_confirm(self):
         for order in self:
-            if not order.meses_renta or order.meses_renta <= 0:
+            if not order.es_arrendamiento or not order.meses_renta or order.meses_renta <= 0:
                 continue
 
             meses = order.meses_renta
 
-            # Calcular cuota ANTES de modificar precios (moneda aún es USD)
-            total_recurrente = sum(
-                line.price_subtotal
-                for line in order.order_line
-                if line.product_id.recurring_invoice
+            linea_servicio = order.order_line.filtered(
+                lambda l: l.product_id.recurring_invoice
             )
-            if order.currency_id.name == 'USD' and order.tc_pactado > 0:
-                cuota_fija = (total_recurrente * order.tc_pactado) / meses
-            elif order.currency_id.name == 'MXN':
-                cuota_fija = total_recurrente / meses
-            else:
-                cuota_fija = 0.0
+            if not linea_servicio:
+                raise UserError(
+                    f'La cotización {order.name} está marcada como arrendamiento '
+                    f'pero no tiene la línea del servicio de renta. '
+                    f'Usa el botón "Convertir a Arrendamiento" antes de confirmar.'
+                )
+
+            total_equipo = sum(linea_servicio.mapped('price_unit'))
 
             if order.currency_id.name == 'USD':
                 if not order.tc_pactado or order.tc_pactado <= 0:
@@ -118,108 +199,23 @@ class SaleOrder(models.Model):
                         f'La cotización {order.name} está en USD con plazo de {meses} meses.\n\n'
                         f'Debes ingresar el TC Pactado antes de confirmar.'
                     )
-                lineas_recurrentes = order.order_line.filtered(
-                    lambda l: l.product_id.recurring_invoice
-                )
-                lineas_no_recurrentes = order.order_line.filtered(
-                    lambda l: not l.product_id.recurring_invoice
-                )
-                if not lineas_recurrentes:
-                    raise UserError(
-                        f'La cotización {order.name} tiene plazo de renta pero ningún '
-                        f'producto está configurado como recurrente.'
-                    )
-                for line in lineas_recurrentes:
-                    precio_usd = line.price_unit
-                    line.write({
-                        'precio_venta_usd': precio_usd,
-                        'price_unit': (precio_usd * order.tc_pactado) / meses,
-                    })
-                for line in lineas_no_recurrentes:
-                    if line.price_unit > 0:
-                        line.write({
-                            'price_unit': line.price_unit * order.tc_pactado,
-                        })
+                cuota_fija = (total_equipo * order.tc_pactado) / meses
                 pricelist_mxn = self.env['product.pricelist'].search(
                     [('currency_id.name', '=', 'MXN')], limit=1
                 )
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
             else:
-                lineas_recurrentes = order.order_line.filtered(
-                    lambda l: l.product_id.recurring_invoice
-                )
-                for line in lineas_recurrentes:
-                    line.write({'price_unit': line.price_unit / meses})
+                cuota_fija = total_equipo / meses
 
-            if not order.plan_id:
-                plan_renta = self.env['sale.subscription.plan'].search(
-                    [('name', '=', 'Renta Anual')], limit=1
-                )
-                if plan_renta:
-                    order.write({'plan_id': plan_renta.id})
+            linea_servicio.write({'price_unit': cuota_fija})
 
-            # Fijar cuota y marcar como fijada para que no se recompute
             order.write({
                 'cuota_mensual_mxn': cuota_fija,
                 'cuota_fijada': True,
             })
 
-        result = super().action_confirm()
-
-        # Crear entregas después de confirmar
-        for order in self:
-            if order.meses_renta and order.meses_renta > 0:
-                lineas_recurrentes = order.order_line.filtered(
-                    lambda l: l.product_id.recurring_invoice
-                )
-                self._crear_entrega_renta(order, lineas_recurrentes)
-
-        return result
-
-    def _crear_entrega_renta(self, order, lineas_recurrentes):
-        """Crea orden de entrega vinculada a la OV para productos recurrentes."""
-        picking_type = self.env['stock.picking.type'].search([
-            ('code', '=', 'outgoing'),
-            ('warehouse_id.lot_stock_id.complete_name', 'ilike', 'WH-NA'),
-        ], limit=1)
-
-        if not picking_type:
-            return
-
-        ubicacion_destino = self.env['stock.location'].search([
-            ('usage', '=', 'customer'),
-        ], limit=1)
-
-        moves = []
-        for line in lineas_recurrentes:
-            if line.product_id.type == 'product':
-                moves.append((0, 0, {
-                    'name': line.product_id.name,
-                    'product_id': line.product_id.id,
-                    'product_uom_qty': line.product_uom_qty,
-                    'product_uom': line.product_uom.id,
-                    'location_id': picking_type.default_location_src_id.id,
-                    'location_dest_id': ubicacion_destino.id,
-                    'sale_line_id': line.id,
-                }))
-
-        if not moves:
-            return
-
-        picking = self.env['stock.picking'].create({
-            'partner_id': order.partner_id.id,
-            'picking_type_id': picking_type.id,
-            'location_id': picking_type.default_location_src_id.id,
-            'location_dest_id': ubicacion_destino.id,
-            'origin': order.name,
-            'move_ids': moves,
-        })
-
-        if order.procurement_group_id:
-            picking.write({'group_id': order.procurement_group_id.id})
-
-        return picking
+        return super().action_confirm()
 
     def action_view_assets(self):
         self.ensure_one()
@@ -231,39 +227,3 @@ class SaleOrder(models.Model):
             'domain': [('id', 'in', self.asset_ids.ids)],
             'context': {'default_partner_id': self.partner_id.id},
         }
-
-
-class SaleOrderLine(models.Model):
-    _inherit = 'sale.order.line'
-
-    precio_venta_usd = fields.Float(
-        string='Precio Venta USD',
-        digits=(16, 2),
-        readonly=True,
-        help='Precio original en USD antes de conversión a cuota mensual MXN.',
-    )
-
-
-class SaleOrderLineRenta(models.Model):
-    _inherit = 'sale.order.line'
-
-    def _compute_price_unit(self):
-        """Si la orden es de renta con meses definidos y está en borrador,
-        no recalcular el precio — el usuario lo pone manualmente en USD."""
-        lines_renta = self.filtered(
-            lambda l: l.order_id.meses_renta > 0
-            and l.order_id.state in ['draft', 'sent']
-            and l.product_id.recurring_invoice
-            and l.price_unit > 0
-        )
-        lines_normales = self - lines_renta
-
-        # Procesar líneas normales con el método original
-        if lines_normales:
-            super(SaleOrderLineRenta, lines_normales)._compute_price_unit()
-
-        # Las líneas de renta no se recomputan — mantienen el precio del usuario
-        # Solo inicializar si están en 0
-        for line in lines_renta:
-            if not line.price_unit:
-                super(SaleOrderLineRenta, line)._compute_price_unit()

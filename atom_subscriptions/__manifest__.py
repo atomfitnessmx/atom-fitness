@@ -1,14 +1,15 @@
 {
     'name': 'Atom Fitness - Suscripciones Renta',
-    'version': '17.0.1.0.0',
+    'version': '17.0.2.0.0',
     'category': 'Sales/Subscriptions',
-    'summary': 'TC pactado, meses libres y cuota mensual automática para renta de equipo',
+    'summary': 'Conversión de cotización a contrato de arrendamiento con cuota mensual',
     'author': 'RDA Advisory',
     'website': 'https://rdaadvisory.com',
     'license': 'LGPL-3',
     'depends': [
         'sale',
         'sale_subscription',
+        'product',
     ],
     'data': [
         'views/sale_order_views.xml',
