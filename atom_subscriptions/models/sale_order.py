@@ -18,12 +18,12 @@ class SaleOrder(models.Model):
     )
 
     cuota_mensual_mxn = fields.Float(
-        string='Cuota Mensual MXN $',
+        string='Cuota Mensual MXN $ (antes de IVA)',
         digits=(16, 2),
         readonly=True,
         store=True,
         compute='_compute_cuota_mensual',
-        help='Cuota mensual fija en MXN = Total USD del equipo x TC Pactado / Meses.',
+        help='Cuota mensual fija en MXN, antes de IVA = Total USD del equipo x TC Pactado / Meses.',
     )
 
     cuota_fijada = fields.Boolean(
@@ -76,6 +76,9 @@ class SaleOrder(models.Model):
     @api.depends('order_line.price_subtotal', 'order_line.product_id.default_code',
                  'tc_pactado', 'currency_id', 'meses_renta', 'cuota_fijada')
     def _compute_cuota_mensual(self):
+        # Usamos price_subtotal (siempre neto, sin IVA) como base — nunca
+        # price_unit, cuyo significado depende de si el impuesto tiene
+        # "Precio con impuestos incluidos" activado o no.
         for order in self:
             if order.cuota_fijada:
                 continue
@@ -85,20 +88,20 @@ class SaleOrder(models.Model):
                 order.cuota_mensual_mxn = 0.0
                 continue
 
-            total_recurrente = sum(
+            total_neto = sum(
                 line.price_subtotal
                 for line in order.order_line
                 if line.product_id.default_code == 'ARR-GYM-MENSUAL'
             )
 
-            if total_recurrente <= 0:
+            if total_neto <= 0:
                 order.cuota_mensual_mxn = 0.0
                 continue
 
             if order.currency_id.name == 'USD' and order.tc_pactado > 0:
-                order.cuota_mensual_mxn = (total_recurrente * order.tc_pactado) / meses
+                order.cuota_mensual_mxn = (total_neto * order.tc_pactado) / meses
             elif order.currency_id.name == 'MXN':
-                order.cuota_mensual_mxn = total_recurrente / meses
+                order.cuota_mensual_mxn = total_neto / meses
             else:
                 order.cuota_mensual_mxn = 0.0
 
@@ -113,9 +116,22 @@ class SaleOrder(models.Model):
                 }
             }
 
+    @staticmethod
+    def _monto_bruto_desde_neto(monto_neto, taxes):
+        """Si las taxes de la línea tienen 'Precio con impuestos incluidos'
+        activado, price_unit se interpreta como el monto CON impuesto.
+        Esta función 'engorda' un monto neto deseado para que, al guardarlo
+        en price_unit, el price_subtotal resultante sea exactamente el
+        monto neto que queremos (evita que Odoo lo encoja silenciosamente)."""
+        factor = 1.0
+        for tax in taxes:
+            if tax.price_include:
+                factor *= (1 + tax.amount / 100.0)
+        return monto_neto * factor
+
     def action_convertir_arrendamiento(self):
         """Convierte las líneas de equipo rentable en una sola línea del
-        servicio de arrendamiento, sumando su valor total en USD."""
+        servicio de arrendamiento, sumando su valor neto total en USD."""
         self.ensure_one()
 
         if self.state not in ('draft', 'sent'):
@@ -138,7 +154,15 @@ class SaleOrder(models.Model):
                 'marcada como rentable.'
             )
 
-        total_equipo = sum(lineas_rentables.mapped('price_subtotal'))
+        # Total NETO (sin IVA) de las líneas de equipo — esta es la base
+        # real del contrato, independientemente de cómo esté configurado
+        # el impuesto en cada línea original.
+        total_equipo_neto = sum(lineas_rentables.mapped('price_subtotal'))
+
+        # Marcar como arrendamiento ANTES de tocar las líneas, para que
+        # nuestra protección de precio (ver SaleOrderLine más abajo) esté
+        # activa durante todo el resto del proceso.
+        self.write({'es_arrendamiento': True})
 
         for line in lineas_rentables:
             line.write({'price_unit': 0.0})
@@ -153,22 +177,22 @@ class SaleOrder(models.Model):
                 'Contacta a soporte antes de continuar.'
             )
 
+        price_unit_bruto = self._monto_bruto_desde_neto(
+            total_equipo_neto, producto_renta.taxes_id
+        )
+
         self.env['sale.order.line'].create({
             'order_id': self.id,
             'product_id': producto_renta.product_variant_id.id,
             'product_uom_qty': 1,
-            'price_unit': total_equipo,
+            'price_unit': price_unit_bruto,
             'name': producto_renta.name,
         })
 
         plan_renta = self.env['sale.subscription.plan'].search(
             [('name', '=', 'Renta')], limit=1
         )
-
-        self.write({
-            'plan_id': plan_renta.id if plan_renta else False,
-            'es_arrendamiento': True,
-        })
+        self.write({'plan_id': plan_renta.id if plan_renta else False})
 
     def action_confirm(self):
         for order in self:
@@ -192,7 +216,9 @@ class SaleOrder(models.Model):
                     f'de arrendamiento. Debe existir solo una.'
                 )
 
-            total_equipo = linea_servicio.price_unit
+            # Base NETA (sin IVA) del total del equipo, tomada del price_subtotal
+            # actual de la línea de servicio — nunca de price_unit directamente.
+            total_equipo_neto = linea_servicio.price_subtotal
 
             if order.currency_id.name == 'USD':
                 if not order.tc_pactado or order.tc_pactado <= 0:
@@ -200,19 +226,22 @@ class SaleOrder(models.Model):
                         f'La cotización {order.name} está en USD con plazo de {meses} meses.\n\n'
                         f'Debes ingresar el TC Pactado antes de confirmar.'
                     )
-                cuota_fija = (total_equipo * order.tc_pactado) / meses
+                cuota_neta = (total_equipo_neto * order.tc_pactado) / meses
                 pricelist_mxn = self.env['product.pricelist'].search(
                     [('currency_id.name', '=', 'MXN')], limit=1
                 )
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
             else:
-                cuota_fija = total_equipo / meses
+                cuota_neta = total_equipo_neto / meses
 
-            linea_servicio.write({'price_unit': cuota_fija})
+            precio_unit_bruto = order._monto_bruto_desde_neto(
+                cuota_neta, linea_servicio.tax_id
+            )
+            linea_servicio.write({'price_unit': precio_unit_bruto})
 
             order.write({
-                'cuota_mensual_mxn': cuota_fija,
+                'cuota_mensual_mxn': cuota_neta,
                 'cuota_fijada': True,
             })
 
@@ -234,10 +263,12 @@ class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
 
     def _compute_price_unit(self):
-        lineas_arrendamiento = self.filtered(
-            lambda l: l.order_id.es_arrendamiento
-            and l.product_id.default_code == 'ARR-GYM-MENSUAL'
-        )
+        """Una vez que una orden queda marcada como arrendamiento, NINGUNA
+        de sus líneas se recalcula automáticamente vía el motor de precios
+        de Odoo — todas las mantiene fijas nuestro flujo (conversión y
+        confirmación). Esto evita que el equipo en $0 o la cuota calculada
+        se sobreescriban silenciosamente por triggers internos de Odoo."""
+        lineas_arrendamiento = self.filtered(lambda l: l.order_id.es_arrendamiento)
         lineas_normales = self - lineas_arrendamiento
 
         if lineas_normales:
