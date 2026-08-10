@@ -17,13 +17,29 @@ class SaleOrder(models.Model):
         help='Número de meses del contrato de arrendamiento.',
     )
 
+    porcentaje_renta = fields.Float(
+        string='Porcentaje de Renta (%)',
+        digits=(16, 2),
+        default=3.0,
+        help='Porcentaje mensual sobre el valor del equipo (en MXN) que define '
+             'la cuota de renta. Editable por contrato; 3% es el valor por defecto.',
+    )
+
+    valor_equipo_mxn = fields.Float(
+        string='Valor Equipo en MXN (histórico)',
+        digits=(16, 2), readonly=True, copy=False,
+        help='Valor del equipo convertido a MXN al momento de confirmar '
+             '(Valor Contrato USD x TC Pactado). Se conserva como referencia '
+             'histórica del cálculo, aunque el TC de mercado cambie después.',
+    )
+
     cuota_mensual_mxn = fields.Float(
         string='Cuota Mensual MXN $ (antes de IVA)',
         digits=(16, 2),
         readonly=True,
         store=True,
         compute='_compute_cuota_mensual',
-        help='Cuota mensual en MXN, antes de IVA = Total USD del equipo x TC Pactado / Meses.',
+        help='Cuota mensual en MXN, antes de IVA = Valor Equipo MXN x Porcentaje de Renta.',
     )
 
     cuota_fijada = fields.Boolean(string='Cuota Fijada', default=False, copy=False)
@@ -49,17 +65,40 @@ class SaleOrder(models.Model):
     valor_contrato_usd = fields.Float(
         string='Valor del Contrato USD',
         digits=(16, 2), readonly=True, copy=False,
+        help='Valor total del equipo del contrato en USD, antes de IVA '
+             '(fijado al convertir a arrendamiento).',
     )
 
     valor_contrato_mxn = fields.Float(
-        string='Valor del Contrato MXN',
+        string='Valor Total del Contrato MXN',
         digits=(16, 2), readonly=True, copy=False,
+        help='Valor total del contrato durante toda su vigencia en MXN '
+             '= Cuota Mensual x Plazo (meses). Fijado al confirmar.',
     )
 
     cuenta_analitica_id = fields.Many2one(
         'account.analytic.account',
         string='Cuenta Analítica del Contrato',
         readonly=True, copy=False,
+    )
+
+    cotizacion_origen_id = fields.Many2one(
+        'sale.order',
+        string='Cotización de Origen',
+        copy=False,
+        domain="[('id', '!=', id), ('es_arrendamiento', '=', False), "
+               "('partner_id', '=', partner_id)]",
+        help='Cotización original en USD donde se cotizó el equipo, antes de '
+             'que el cliente autorizara la renta. Obligatoria para confirmar '
+             'un contrato de arrendamiento — da trazabilidad hacia el '
+             'documento de origen del contrato.',
+    )
+
+    suscripciones_relacionadas_count = fields.Integer(
+        string='# Suscripciones Relacionadas',
+        compute='_compute_suscripciones_relacionadas_count',
+        help='Número de contratos de arrendamiento que tienen esta '
+             'cotización como Cotización de Origen.',
     )
 
     asset_ids = fields.Many2many(
@@ -76,6 +115,38 @@ class SaleOrder(models.Model):
         for order in self:
             order.asset_count = len(order.asset_ids)
 
+    def _compute_suscripciones_relacionadas_count(self):
+        # Cuenta cuántas órdenes tienen a ESTA orden como cotización de
+        # origen (enlace inverso: de la cotización original hacia las
+        # suscripciones que se generaron a partir de ella).
+        conteo = self.env['sale.order'].read_group(
+            [('cotizacion_origen_id', 'in', self.ids)],
+            ['cotizacion_origen_id'], ['cotizacion_origen_id'],
+        )
+        mapa = {c['cotizacion_origen_id'][0]: c['cotizacion_origen_id_count'] for c in conteo}
+        for order in self:
+            order.suscripciones_relacionadas_count = mapa.get(order.id, 0)
+
+    def action_view_suscripciones_relacionadas(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': 'Suscripciones Relacionadas',
+            'res_model': 'sale.order',
+            'view_mode': 'list,form',
+            'domain': [('cotizacion_origen_id', '=', self.id)],
+        }
+
+    def action_view_cotizacion_origen(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': 'Cotización de Origen',
+            'res_model': 'sale.order',
+            'view_mode': 'form',
+            'res_id': self.cotizacion_origen_id.id,
+        }
+
     @api.depends('order_line.product_id.categ_id.es_categoria_rentable')
     def _compute_tiene_producto_rentable(self):
         for order in self:
@@ -87,38 +158,62 @@ class SaleOrder(models.Model):
 
     @api.depends('order_line.price_unit', 'order_line.product_uom_qty',
                  'order_line.product_id.default_code',
-                 'tc_pactado', 'currency_id', 'meses_renta', 'cuota_fijada')
+                 'tc_pactado', 'porcentaje_renta', 'currency_id', 'cuota_fijada')
     def _compute_cuota_mensual(self):
+        # La línea de servicio (ARR-GYM-MENSUAL) ya contiene el valor NETO
+        # (sin IVA) del equipo, porque action_convertir_arrendamiento lo
+        # calcula a partir de price_subtotal de las líneas originales, no
+        # de price_unit.
         for order in self:
             if order.cuota_fijada:
                 continue
-            meses = order.meses_renta
-            if meses <= 0:
-                order.cuota_mensual_mxn = 0.0
-                continue
+
             total_equipo = sum(
                 line.price_unit * line.product_uom_qty
                 for line in order.order_line
                 if line.product_id.default_code == 'ARR-GYM-MENSUAL'
             )
-            if total_equipo <= 0:
+
+            if total_equipo <= 0 or order.porcentaje_renta <= 0:
                 order.cuota_mensual_mxn = 0.0
                 continue
+
             if order.currency_id.name == 'USD' and order.tc_pactado > 0:
-                order.cuota_mensual_mxn = (total_equipo * order.tc_pactado) / meses
+                valor_equipo_mxn = total_equipo * order.tc_pactado
             elif order.currency_id.name == 'MXN':
-                order.cuota_mensual_mxn = total_equipo / meses
+                valor_equipo_mxn = total_equipo
             else:
                 order.cuota_mensual_mxn = 0.0
+                continue
 
-    @api.onchange('tc_pactado', 'meses_renta', 'currency_id')
+            order.cuota_mensual_mxn = valor_equipo_mxn * (order.porcentaje_renta / 100.0)
+
+    @api.onchange('tc_pactado', 'meses_renta', 'porcentaje_renta', 'currency_id')
     def _onchange_renta_fields(self):
-        if self.meses_renta > 0 and self.currency_id.name == 'USD' and not self.tc_pactado:
+        tiene_linea_renta = any(
+            l.product_id.default_code == 'ARR-GYM-MENSUAL' for l in self.order_line
+        )
+        if not tiene_linea_renta:
+            return
+
+        if self.currency_id.name == 'USD' and not self.tc_pactado:
             return {
                 'warning': {
                     'title': 'TC Pactado requerido',
                     'message': 'La cotización está en USD. '
                                'Ingresa el TC pactado para calcular la cuota mensual en MXN.',
+                }
+            }
+
+        if self.currency_id.name == 'MXN' and self.tc_pactado:
+            return {
+                'warning': {
+                    'title': '⚠ Moneda MXN con TC Pactado capturado',
+                    'message': 'Esta cotización está en pesos (MXN), pero capturaste un TC '
+                               'Pactado. Si el equipo se cotizó pensando en USD, la Lista de '
+                               'Precios se quedó en MXN por error — cancela esta cotización y '
+                               'crea una nueva seleccionando primero la Lista de Precios en USD. '
+                               'Si el contrato es realmente en MXN, borra el TC Pactado.',
                 }
             }
 
@@ -143,9 +238,9 @@ class SaleOrder(models.Model):
                 'marcada como rentable.'
             )
 
-        total_equipo = sum(
-            line.price_unit * line.product_uom_qty for line in lineas_rentables
-        )
+        # Base NETA (sin IVA) del equipo — el precio cotizado al cliente
+        # incluye IVA, así que usamos price_subtotal, no price_unit.
+        total_equipo = sum(lineas_rentables.mapped('price_subtotal'))
 
         self.write({
             'es_arrendamiento': True,
@@ -206,6 +301,20 @@ class SaleOrder(models.Model):
 
             meses = order.meses_renta
 
+            if not order.porcentaje_renta or order.porcentaje_renta <= 0:
+                raise UserError(
+                    f'La cotización {order.name} no tiene un Porcentaje de Renta válido. '
+                    f'Captúralo en la pestaña "Contrato de Arrendamiento" antes de confirmar.'
+                )
+
+            if not order.cotizacion_origen_id:
+                raise UserError(
+                    f'La cotización {order.name} no tiene una Cotización de Origen '
+                    f'vinculada.\n\nCaptúrala en la pestaña "Contrato de Arrendamiento" '
+                    f'antes de confirmar — es el documento en USD donde se cotizó el '
+                    f'equipo antes de que el cliente autorizara la renta.'
+                )
+
             linea_servicio = order.order_line.filtered(
                 lambda l: l.product_id.default_code == 'ARR-GYM-MENSUAL'
             )
@@ -221,24 +330,55 @@ class SaleOrder(models.Model):
                     f'de arrendamiento. Debe existir solo una.'
                 )
 
+            # total_equipo ya es NETO (sin IVA) — viene de price_subtotal
+            # de las líneas originales, capturado en la conversión.
             total_equipo = linea_servicio.price_unit
 
             if order.currency_id.name == 'USD':
                 if not order.tc_pactado or order.tc_pactado <= 0:
                     raise UserError(
-                        f'La cotización {order.name} está en USD con plazo de {meses} meses.\n\n'
+                        f'La cotización {order.name} está en USD.\n\n'
                         f'Debes ingresar el TC Pactado antes de confirmar.'
                     )
-                cuota = (total_equipo * order.tc_pactado) / meses
-                valor_mxn = total_equipo * order.tc_pactado
+                valor_equipo_mxn = total_equipo * order.tc_pactado
                 pricelist_mxn = self.env['product.pricelist'].search(
                     [('currency_id.name', '=', 'MXN')], limit=1
                 )
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
+            elif order.currency_id.name == 'MXN':
+                if order.tc_pactado and order.tc_pactado > 0:
+                    # Contradicción: si el contrato realmente es en MXN, no
+                    # tiene sentido tener un TC Pactado capturado. Lo más
+                    # probable es que el equipo se cotizó pensando en USD,
+                    # pero la Lista de Precios de la cotización se quedó en
+                    # MXN por error (no se cambió ANTES de capturar las
+                    # líneas). Bloqueamos para evitar calcular la cuota sin
+                    # aplicar el tipo de cambio.
+                    raise UserError(
+                        f'La cotización {order.name} está en MXN pero tiene un '
+                        f'TC Pactado capturado ({order.tc_pactado}).\n\n'
+                        f'Esto normalmente ocurre cuando el equipo se cotizó '
+                        f'pensando en USD, pero la Lista de Precios de la '
+                        f'cotización nunca se cambió a una en dólares antes de '
+                        f'capturar las líneas.\n\n'
+                        f'• Si el equipo SÍ se cotizó en USD: cancela esta '
+                        f'cotización, crea una nueva, selecciona primero la '
+                        f'Lista de Precios en USD y vuelve a capturar las '
+                        f'líneas antes de convertir a arrendamiento.\n'
+                        f'• Si el contrato realmente es en MXN: borra el TC '
+                        f'Pactado (déjalo en 0) y vuelve a confirmar.'
+                    )
+                valor_equipo_mxn = total_equipo
             else:
-                cuota = total_equipo / meses
-                valor_mxn = total_equipo
+                raise UserError(
+                    f'La cotización {order.name} está en una moneda no '
+                    f'soportada para arrendamiento ({order.currency_id.name}). '
+                    f'Usa una Lista de Precios en USD o en MXN.'
+                )
+
+            cuota = valor_equipo_mxn * (order.porcentaje_renta / 100.0)
+            valor_total_contrato = cuota * meses
 
             cuenta = order._crear_cuenta_analitica_contrato()
             linea_servicio.write({
@@ -247,8 +387,9 @@ class SaleOrder(models.Model):
             })
 
             order.write({
+                'valor_equipo_mxn': valor_equipo_mxn,
                 'cuota_mensual_mxn': cuota,
-                'valor_contrato_mxn': valor_mxn,
+                'valor_contrato_mxn': valor_total_contrato,
                 'cuota_fijada': True,
             })
 
@@ -272,7 +413,7 @@ class SaleOrderLine(models.Model):
     precio_venta_usd = fields.Float(
         string='Precio Cotizado USD',
         digits=(16, 2), readonly=True, copy=False,
-        help='Precio original cotizado en USD antes de la conversión a arrendamiento.',
+        help='Precio original cotizado en USD (con IVA) antes de la conversión a arrendamiento.',
     )
 
     def _compute_price_unit(self):
@@ -284,11 +425,6 @@ class SaleOrderLine(models.Model):
     @api.depends('qty_invoiced', 'qty_delivered', 'product_uom_qty', 'state',
                  'order_id.es_arrendamiento', 'product_id.default_code')
     def _compute_qty_to_invoice(self):
-        """En contratos de arrendamiento, SOLO la línea del servicio de renta
-        es facturable. Las líneas del equipo físico (entregadas en $0 y
-        capitalizadas como Activo Fijo) nunca deben facturarse: si llegaran a
-        una factura, la contabilidad anglosajona reconocería un costo de venta
-        que duplicaría la capitalización."""
         super()._compute_qty_to_invoice()
         for line in self:
             if (line.order_id.es_arrendamiento

@@ -6,7 +6,6 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
 
-            <!-- Botón Convertir a Arrendamiento -->
             <xpath expr="//button[@name='action_confirm'][1]" position="before">
                 <field name="tiene_producto_rentable" invisible="1"/>
                 <field name="es_arrendamiento" invisible="1"/>
@@ -18,7 +17,6 @@
                     confirm="Esto pondrá en $0 las líneas de equipo cotizadas y creará una línea consolidada del servicio de arrendamiento. ¿Continuar?"/>
             </xpath>
 
-            <!-- Smartbutton Activos Fijos -->
             <xpath expr="//div[@name='button_box']" position="inside">
                 <button name="action_view_assets"
                     type="object"
@@ -27,30 +25,48 @@
                     invisible="not es_arrendamiento or asset_count == 0">
                     <field name="asset_count" widget="statinfo" string="Activos Fijos"/>
                 </button>
+                <button name="action_view_cotizacion_origen"
+                    type="object"
+                    class="oe_stat_button"
+                    icon="fa-file-text-o"
+                    invisible="not cotizacion_origen_id">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Cotización</span>
+                        <span class="o_stat_text">de Origen</span>
+                    </div>
+                </button>
+                <button name="action_view_suscripciones_relacionadas"
+                    type="object"
+                    class="oe_stat_button"
+                    icon="fa-refresh"
+                    invisible="suscripciones_relacionadas_count == 0">
+                    <field name="suscripciones_relacionadas_count" widget="statinfo" string="Suscripciones"/>
+                </button>
             </xpath>
 
-            <!-- Campos de renta después del plan_block -->
+
             <xpath expr="//div[@name='plan_block']" position="after">
                 <field name="meses_renta"
                     invisible="not is_subscription"
-                    placeholder="Ej: 48"
+                    placeholder="Ej: 60"
                     string="Plazo (meses)"/>
                 <field name="tc_pactado"
                     invisible="meses_renta == 0"
                     placeholder="Ej: 17.50"
                     string="TC Pactado (USD/MXN)"/>
+                <field name="porcentaje_renta"
+                    invisible="meses_renta == 0"
+                    string="Porcentaje de Renta (%)"/>
                 <field name="cuota_mensual_mxn"
                     invisible="meses_renta == 0"
                     readonly="1"
                     string="Cuota Mensual MXN $ (antes de IVA)"/>
             </xpath>
 
-            <!-- Columna Precio Cotizado USD en las líneas -->
             <xpath expr="//field[@name='order_line']/tree/field[@name='price_unit']" position="after">
                 <field name="precio_venta_usd" optional="show" string="Precio Cotizado USD"/>
             </xpath>
 
-            <!-- Pestaña Contrato de Arrendamiento -->
             <xpath expr="//page[@name='order_lines']" position="after">
                 <page string="Contrato de Arrendamiento" invisible="not es_arrendamiento">
                     <group>
@@ -58,20 +74,28 @@
                             <field name="nombre_contrato"
                                 readonly="state not in ('draft','sent')"
                                 placeholder="Ej: RENTA-GYM-CDMX-001 (vacío = folio de la orden)"/>
+                            <field name="cotizacion_origen_id"
+                                readonly="state not in ('draft','sent')"
+                                required="es_arrendamiento and state in ('draft','sent')"
+                                placeholder="Selecciona la cotización en USD donde se cotizó el equipo"/>
                             <field name="cuenta_analitica_id"/>
                         </group>
                         <group string="Valores del Contrato">
-                            <field name="valor_contrato_usd"/>
-                            <field name="valor_contrato_mxn"/>
+                            <field name="valor_contrato_usd" string="Valor Equipo USD (sin IVA)"/>
+                            <field name="valor_equipo_mxn" string="Valor Equipo MXN (histórico)"/>
                             <field name="meses_renta" readonly="1" string="Plazo (meses)"/>
                             <field name="tc_pactado" readonly="1" string="TC Pactado"/>
+                            <field name="porcentaje_renta" readonly="state == 'sale'" string="Porcentaje de Renta (%)"/>
                             <field name="cuota_mensual_mxn" readonly="1" string="Cuota Mensual MXN (antes de IVA)"/>
+                            <field name="valor_contrato_mxn" readonly="1" string="Valor Total del Contrato MXN"/>
                         </group>
                     </group>
                     <p class="text-muted">
-                        La cuenta analítica del contrato se crea automáticamente al confirmar,
-                        dentro del plan analítico "Renta". En ella se registran las facturas de
-                        renta, la inversión capitalizada y la depreciación mensual de los equipos.
+                        La cuota mensual se calcula como: Valor Equipo MXN x Porcentaje de Renta.
+                        El Valor Total del Contrato es la cuota mensual multiplicada por el plazo en meses.
+                        La cuenta analítica del contrato se crea automáticamente al confirmar, dentro del
+                        plan analítico "Renta". La Cotización de Origen es obligatoria: es el documento en
+                        USD donde se cotizó el equipo antes de que el cliente autorizara la renta.
                     </p>
                 </page>
             </xpath>
@@ -79,7 +103,6 @@
         </field>
     </record>
 
-    <!-- Campo rentable en categoría de producto -->
     <record id="view_category_form_atom_subscriptions" model="ir.ui.view">
         <field name="name">product.category.form.atom.subscriptions</field>
         <field name="model">product.category</field>
