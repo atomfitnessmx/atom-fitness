@@ -1,6 +1,6 @@
 {
     'name': 'Atom Fitness - Suscripciones Renta',
-    'version': '17.0.2.4.0',
+    'version': '17.0.2.4.1',
     'category': 'Sales/Subscriptions',
     'summary': 'Arrendamiento de equipo: conversión de cotización, capitalización automática de AF y analítica por contrato',
     'author': 'RDA Advisory',

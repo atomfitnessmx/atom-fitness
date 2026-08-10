@@ -139,15 +139,32 @@ class SaleOrder(models.Model):
 
     @api.onchange('tc_pactado', 'meses_renta', 'porcentaje_renta', 'currency_id')
     def _onchange_renta_fields(self):
+        tiene_linea_renta = any(
+            l.product_id.default_code == 'ARR-GYM-MENSUAL' for l in self.order_line
+        )
+        if not tiene_linea_renta:
+            return
+
         if self.currency_id.name == 'USD' and not self.tc_pactado:
-            if any(l.product_id.default_code == 'ARR-GYM-MENSUAL' for l in self.order_line):
-                return {
-                    'warning': {
-                        'title': 'TC Pactado requerido',
-                        'message': 'La cotización está en USD. '
-                                   'Ingresa el TC pactado para calcular la cuota mensual en MXN.',
-                    }
+            return {
+                'warning': {
+                    'title': 'TC Pactado requerido',
+                    'message': 'La cotización está en USD. '
+                               'Ingresa el TC pactado para calcular la cuota mensual en MXN.',
                 }
+            }
+
+        if self.currency_id.name == 'MXN' and self.tc_pactado:
+            return {
+                'warning': {
+                    'title': '⚠ Moneda MXN con TC Pactado capturado',
+                    'message': 'Esta cotización está en pesos (MXN), pero capturaste un TC '
+                               'Pactado. Si el equipo se cotizó pensando en USD, la Lista de '
+                               'Precios se quedó en MXN por error — cancela esta cotización y '
+                               'crea una nueva seleccionando primero la Lista de Precios en USD. '
+                               'Si el contrato es realmente en MXN, borra el TC Pactado.',
+                }
+            }
 
     def action_convertir_arrendamiento(self):
         self.ensure_one()
@@ -270,8 +287,36 @@ class SaleOrder(models.Model):
                 )
                 if pricelist_mxn:
                     order.write({'pricelist_id': pricelist_mxn.id})
-            else:
+            elif order.currency_id.name == 'MXN':
+                if order.tc_pactado and order.tc_pactado > 0:
+                    # Contradicción: si el contrato realmente es en MXN, no
+                    # tiene sentido tener un TC Pactado capturado. Lo más
+                    # probable es que el equipo se cotizó pensando en USD,
+                    # pero la Lista de Precios de la cotización se quedó en
+                    # MXN por error (no se cambió ANTES de capturar las
+                    # líneas). Bloqueamos para evitar calcular la cuota sin
+                    # aplicar el tipo de cambio.
+                    raise UserError(
+                        f'La cotización {order.name} está en MXN pero tiene un '
+                        f'TC Pactado capturado ({order.tc_pactado}).\n\n'
+                        f'Esto normalmente ocurre cuando el equipo se cotizó '
+                        f'pensando en USD, pero la Lista de Precios de la '
+                        f'cotización nunca se cambió a una en dólares antes de '
+                        f'capturar las líneas.\n\n'
+                        f'• Si el equipo SÍ se cotizó en USD: cancela esta '
+                        f'cotización, crea una nueva, selecciona primero la '
+                        f'Lista de Precios en USD y vuelve a capturar las '
+                        f'líneas antes de convertir a arrendamiento.\n'
+                        f'• Si el contrato realmente es en MXN: borra el TC '
+                        f'Pactado (déjalo en 0) y vuelve a confirmar.'
+                    )
                 valor_equipo_mxn = total_equipo
+            else:
+                raise UserError(
+                    f'La cotización {order.name} está en una moneda no '
+                    f'soportada para arrendamiento ({order.currency_id.name}). '
+                    f'Usa una Lista de Precios en USD o en MXN.'
+                )
 
             cuota = valor_equipo_mxn * (order.porcentaje_renta / 100.0)
             valor_total_contrato = cuota * meses
