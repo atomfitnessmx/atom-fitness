@@ -158,14 +158,25 @@ class SaleOrder(models.Model):
 
     @api.depends('order_line.price_unit', 'order_line.product_uom_qty',
                  'order_line.product_id.default_code',
-                 'tc_pactado', 'porcentaje_renta', 'currency_id', 'cuota_fijada')
+                 'tc_pactado', 'porcentaje_renta', 'currency_id', 'cuota_fijada',
+                 'es_arrendamiento')
     def _compute_cuota_mensual(self):
         # La línea de servicio (ARR-GYM-MENSUAL) ya contiene el valor NETO
         # (sin IVA) del equipo, porque action_convertir_arrendamiento lo
         # calcula a partir de price_subtotal de las líneas originales, no
         # de price_unit.
+        #
+        # 'es_arrendamiento' se pone primero en la condición para que las
+        # miles de cotizaciones normales de la empresa (que no son de
+        # arrendamiento) salgan de inmediato sin iterar sus líneas. Esto
+        # importa porque cuota_mensual_mxn es un campo guardado (store=True):
+        # cualquier actualización del módulo que agregue una dependencia
+        # nueva obliga a Odoo a recalcularlo en TODAS las órdenes de venta
+        # de la base, no solo en las de arrendamiento.
         for order in self:
-            if order.cuota_fijada:
+            if not order.es_arrendamiento or order.cuota_fijada:
+                if not order.cuota_fijada:
+                    order.cuota_mensual_mxn = 0.0
                 continue
 
             total_equipo = sum(
