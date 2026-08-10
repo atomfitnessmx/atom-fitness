@@ -82,6 +82,25 @@ class SaleOrder(models.Model):
         readonly=True, copy=False,
     )
 
+    cotizacion_origen_id = fields.Many2one(
+        'sale.order',
+        string='Cotización de Origen',
+        copy=False,
+        domain="[('id', '!=', id), ('es_arrendamiento', '=', False), "
+               "('partner_id', '=', partner_id)]",
+        help='Cotización original en USD donde se cotizó el equipo, antes de '
+             'que el cliente autorizara la renta. Obligatoria para confirmar '
+             'un contrato de arrendamiento — da trazabilidad hacia el '
+             'documento de origen del contrato.',
+    )
+
+    suscripciones_relacionadas_count = fields.Integer(
+        string='# Suscripciones Relacionadas',
+        compute='_compute_suscripciones_relacionadas_count',
+        help='Número de contratos de arrendamiento que tienen esta '
+             'cotización como Cotización de Origen.',
+    )
+
     asset_ids = fields.Many2many(
         comodel_name='account.asset',
         relation='sale_order_asset_rel',
@@ -95,6 +114,38 @@ class SaleOrder(models.Model):
     def _compute_asset_count(self):
         for order in self:
             order.asset_count = len(order.asset_ids)
+
+    def _compute_suscripciones_relacionadas_count(self):
+        # Cuenta cuántas órdenes tienen a ESTA orden como cotización de
+        # origen (enlace inverso: de la cotización original hacia las
+        # suscripciones que se generaron a partir de ella).
+        conteo = self.env['sale.order'].read_group(
+            [('cotizacion_origen_id', 'in', self.ids)],
+            ['cotizacion_origen_id'], ['cotizacion_origen_id'],
+        )
+        mapa = {c['cotizacion_origen_id'][0]: c['cotizacion_origen_id_count'] for c in conteo}
+        for order in self:
+            order.suscripciones_relacionadas_count = mapa.get(order.id, 0)
+
+    def action_view_suscripciones_relacionadas(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': 'Suscripciones Relacionadas',
+            'res_model': 'sale.order',
+            'view_mode': 'list,form',
+            'domain': [('cotizacion_origen_id', '=', self.id)],
+        }
+
+    def action_view_cotizacion_origen(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': 'Cotización de Origen',
+            'res_model': 'sale.order',
+            'view_mode': 'form',
+            'res_id': self.cotizacion_origen_id.id,
+        }
 
     @api.depends('order_line.product_id.categ_id.es_categoria_rentable')
     def _compute_tiene_producto_rentable(self):
@@ -254,6 +305,14 @@ class SaleOrder(models.Model):
                 raise UserError(
                     f'La cotización {order.name} no tiene un Porcentaje de Renta válido. '
                     f'Captúralo en la pestaña "Contrato de Arrendamiento" antes de confirmar.'
+                )
+
+            if not order.cotizacion_origen_id:
+                raise UserError(
+                    f'La cotización {order.name} no tiene una Cotización de Origen '
+                    f'vinculada.\n\nCaptúrala en la pestaña "Contrato de Arrendamiento" '
+                    f'antes de confirmar — es el documento en USD donde se cotizó el '
+                    f'equipo antes de que el cliente autorizara la renta.'
                 )
 
             linea_servicio = order.order_line.filtered(

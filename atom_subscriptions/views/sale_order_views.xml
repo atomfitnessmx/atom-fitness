@@ -25,7 +25,25 @@
                     invisible="not es_arrendamiento or asset_count == 0">
                     <field name="asset_count" widget="statinfo" string="Activos Fijos"/>
                 </button>
+                <button name="action_view_cotizacion_origen"
+                    type="object"
+                    class="oe_stat_button"
+                    icon="fa-file-text-o"
+                    invisible="not cotizacion_origen_id">
+                    <div class="o_stat_info">
+                        <span class="o_stat_text">Cotización</span>
+                        <span class="o_stat_text">de Origen</span>
+                    </div>
+                </button>
+                <button name="action_view_suscripciones_relacionadas"
+                    type="object"
+                    class="oe_stat_button"
+                    icon="fa-refresh"
+                    invisible="suscripciones_relacionadas_count == 0">
+                    <field name="suscripciones_relacionadas_count" widget="statinfo" string="Suscripciones"/>
+                </button>
             </xpath>
+
 
             <xpath expr="//div[@name='plan_block']" position="after">
                 <field name="meses_renta"
@@ -56,6 +74,10 @@
                             <field name="nombre_contrato"
                                 readonly="state not in ('draft','sent')"
                                 placeholder="Ej: RENTA-GYM-CDMX-001 (vacío = folio de la orden)"/>
+                            <field name="cotizacion_origen_id"
+                                readonly="state not in ('draft','sent')"
+                                required="es_arrendamiento and state in ('draft','sent')"
+                                placeholder="Selecciona la cotización en USD donde se cotizó el equipo"/>
                             <field name="cuenta_analitica_id"/>
                         </group>
                         <group string="Valores del Contrato">
@@ -72,7 +94,8 @@
                         La cuota mensual se calcula como: Valor Equipo MXN x Porcentaje de Renta.
                         El Valor Total del Contrato es la cuota mensual multiplicada por el plazo en meses.
                         La cuenta analítica del contrato se crea automáticamente al confirmar, dentro del
-                        plan analítico "Renta".
+                        plan analítico "Renta". La Cotización de Origen es obligatoria: es el documento en
+                        USD donde se cotizó el equipo antes de que el cliente autorizara la renta.
                     </p>
                 </page>
             </xpath>
