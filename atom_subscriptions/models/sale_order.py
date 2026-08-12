@@ -406,6 +406,25 @@ class SaleOrder(models.Model):
 
         return super().action_confirm()
 
+    # Campos que definen los términos pactados del contrato: una vez
+    # confirmado, no deben poder modificarse por ninguna vía (UI, import,
+    # API) — la protección visual (readonly en la vista) es solo cosmética;
+    # esta es la protección real.
+    _CAMPOS_CONTRATO_BLOQUEADOS = ('meses_renta', 'tc_pactado', 'porcentaje_renta')
+
+    def write(self, vals):
+        campos_tocados = self._CAMPOS_CONTRATO_BLOQUEADOS
+        if any(c in vals for c in campos_tocados):
+            for order in self:
+                if order.es_arrendamiento and order.state not in ('draft', 'sent'):
+                    raise UserError(
+                        f'La cotización {order.name} ya está confirmada como contrato '
+                        f'de arrendamiento. El Plazo, el TC Pactado y el Porcentaje de '
+                        f'Renta quedan fijos desde la confirmación y no pueden '
+                        f'modificarse — son los términos pactados con el cliente.'
+                    )
+        return super().write(vals)
+
     def action_view_assets(self):
         self.ensure_one()
         return {
