@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Ocultar el campo Costo en la ficha del producto a quien no tenga
+         el grupo "Ver Costos de Producto" (Ventas e Inventario quedan fuera) -->
+    <record id="view_template_form_ocultar_costo" model="ir.ui.view">
+        <field name="name">product.template.form.ocultar.costo</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='standard_price']" position="attributes">
+                <attribute name="groups">atom_permisos.group_ver_costos</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Misma protección en la vista de variantes de producto -->
+    <record id="view_product_form_ocultar_costo" model="ir.ui.view">
+        <field name="name">product.product.form.ocultar.costo</field>
+        <field name="model">product.product</field>
+        <field name="inherit_id" ref="product.product_normal_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='standard_price']" position="attributes">
+                <attribute name="groups">atom_permisos.group_ver_costos</attribute>
+            </xpath>
+        </field>
+    </record>
+</odoo>
