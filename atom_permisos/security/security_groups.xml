@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="module_category_atom_permisos" model="ir.module.category">
+        <field name="name">Atom Fitness</field>
+        <field name="sequence">50</field>
+    </record>
+
+    <record id="group_ver_costos" model="res.groups">
+        <field name="name">Ver Costos de Producto</field>
+        <field name="category_id" ref="module_category_atom_permisos"/>
+        <field name="comment">Usuarios en este grupo pueden ver el campo "Costo" de los
+            productos. Ventas e Inventario quedan fuera de este grupo a propósito.</field>
+    </record>
+</odoo>
